@@ -1,0 +1,9 @@
+公募基金规模统计（WorkBuddy 技能）
+
+需要：当期季报.xlsx + 上期季报.xlsx
+输出：YYYYMMDD公募基金规模统计_自动化_规则修订.xlsx
+
+命令：
+  /usr/local/bin/python3 run_stats.py 当期.xlsx 上期.xlsx
+
+网页版（上传即生成）见 GitHub Pages。
