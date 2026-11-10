@@ -123,31 +123,74 @@ def extract_link_residuals_from_df(df: pd.DataFrame, scale_col: str | None = Non
     return out
 
 
-def load_link_holdings_ratios(path: str) -> dict:
-    """读取联接「基金市值占净值比」→ {6位代码: 残差比例}。
+def _clean_header(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).replace("\n", "").replace("\r", "").strip() for c in df.columns]
+    return df
 
-    残差比例 = 1 - 基金市值占净值比/100（即未投向目标ETF/基金的部分）。
+
+def _pct_columns(columns) -> list:
+    return [c for c in columns if "基金市值占" in c or "占基金资产净值" in c or "持有基金市值占比" in c]
+
+
+def _residual_columns(columns) -> list:
+    return [c for c in columns if "残差比例" in str(c)]
+
+
+def load_link_holdings_ratios(path: str) -> dict:
+    """读取联接持仓占比或已算好的残差比例 → {6位代码: 残差比例}。
+
+    残差比例 = 1 - 基金市值占净值比（未投向目标ETF/基金的部分）。
+    重算工作簿首页常为「指标/值」汇总，明细在后续 sheet，这里会自动选有数据的那一页。
     占比缺失或>100%时做裁剪，避免负残差。
     """
-    df = pd.read_excel(path)
-    df.columns = [str(c).replace("\n", "").replace("\r", "").strip() for c in df.columns]
-    pct_cols = [c for c in df.columns if "基金市值占" in c or "占基金资产净值" in c or "持有基金市值占比" in c]
-    if not pct_cols:
-        raise ValueError(f"持仓占比表未找到「基金市值占净值比」列: {list(df.columns)}")
-    if "证券代码" not in df.columns:
-        raise ValueError(f"持仓占比表缺少「证券代码」列: {list(df.columns)}")
+    xl = pd.ExcelFile(path)
+    best = None
+    best_n = -1
+    first_cols = None
+    for sheet in xl.sheet_names:
+        df = _clean_header(pd.read_excel(xl, sheet_name=sheet))
+        if first_cols is None:
+            first_cols = list(df.columns)
+        if "证券代码" not in df.columns:
+            continue
+        pct_cols = _pct_columns(df.columns)
+        res_cols = _residual_columns(df.columns)
+        if not pct_cols and not res_cols:
+            continue
+        use_res = bool(res_cols)
+        col = res_cols[0] if use_res else pct_cols[0]
+        n = int(pd.to_numeric(df[col], errors="coerce").notna().sum())
+        if n > best_n:
+            best = (df, col, use_res, sheet)
+            best_n = n
+    if best is None or best_n <= 0:
+        raise ValueError(
+            "持仓占比表未找到「基金市值占净值比」或「残差比例」列"
+            f"（已查看 {xl.sheet_names}，首页列: {first_cols}）"
+        )
 
-    pct_col = pct_cols[0]
+    df, col, use_res, sheet = best
     out = {}
     for _, r in df.iterrows():
         code = str(r["证券代码"]).replace(".OF", "").replace(".SH", "").replace(".SZ", "")
         code = re.sub(r"\D", "", code).zfill(6)[-6:]
-        residual = _residual_from_pct(pd.to_numeric(r[pct_col], errors="coerce"))
+        if not code or code == "000000":
+            continue
+        raw = pd.to_numeric(r[col], errors="coerce")
+        if use_res:
+            if pd.isna(raw):
+                continue
+            residual = float(raw)
+            if residual > 1.5:
+                residual = residual / 100.0
+            residual = max(0.0, min(1.0, residual))
+        else:
+            residual = _residual_from_pct(raw)
         if residual is None:
             continue
-        # 同一代码多条时保留首次
         out.setdefault(code, residual)
-    logger.info(f"已加载联接持仓占比: {path}（{len(out)} 只）")
+    logger.info(f"已加载联接持仓占比: {path} sheet={sheet} 列={col}（{len(out)} 只）")
     return out
 
 
