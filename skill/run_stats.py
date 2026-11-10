@@ -123,9 +123,46 @@ def extract_link_residuals_from_df(df: pd.DataFrame, scale_col: str | None = Non
     return out
 
 
+def ensure_xlsx(path: str) -> None:
+    """拒绝 Excel 97-2003 的 .xls。网页选择框虽可见，openpyxl 读不了这种 Windows 旧格式。"""
+    with open(path, "rb") as f:
+        magic = f.read(8)
+    if magic.startswith(b"\xd0\xcf\x11\xe0"):
+        raise ValueError("这是 Excel 97-2003 的 .xls，请在 Excel 中另存为“Excel 工作簿 (*.xlsx)”后再上传")
+    if magic.startswith(b"PK"):
+        return
+    head = magic.lstrip().lower()
+    if head.startswith(b"<") or head.startswith(b"<?xml"):
+        raise ValueError("这不是 xlsx（内容像网页或旧版 XML）。请另存为“Excel 工作簿 (*.xlsx)”后再上传")
+
+
+def _norm_col(name) -> str:
+    """去掉 Windows Excel 单元格换行（\\r\\n）和不可见空格。"""
+    s = str(name).replace("\r", "").replace("\n", "").replace("\xa0", "").replace("\u3000", "")
+    return s.strip()
+
+
+def _norm_code6(value) -> str:
+    """证券代码 → 6 位。Excel 把 000216 存成数字 216.0 时，不能把小数点当成一位。"""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not value.is_integer():
+            return ""
+        text = str(int(value))
+    else:
+        text = str(value).strip().replace(".OF", "").replace(".SH", "").replace(".SZ", "")
+        if re.fullmatch(r"\d+\.0+", text):
+            text = text.split(".", 1)[0]
+    digits = re.sub(r"\D", "", text)
+    return digits.zfill(6)[-6:] if digits else ""
+
+
 def _clean_header(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df.columns = [str(c).replace("\n", "").replace("\r", "").strip() for c in df.columns]
+    df.columns = [_norm_col(c) for c in df.columns]
     return df
 
 
@@ -144,6 +181,7 @@ def load_link_holdings_ratios(path: str) -> dict:
     重算工作簿首页常为「指标/值」汇总，明细在后续 sheet，这里会自动选有数据的那一页。
     占比缺失或>100%时做裁剪，避免负残差。
     """
+    ensure_xlsx(path)
     xl = pd.ExcelFile(path)
     best = None
     best_n = -1
@@ -173,8 +211,7 @@ def load_link_holdings_ratios(path: str) -> dict:
     df, col, use_res, sheet = best
     out = {}
     for _, r in df.iterrows():
-        code = str(r["证券代码"]).replace(".OF", "").replace(".SH", "").replace(".SZ", "")
-        code = re.sub(r"\D", "", code).zfill(6)[-6:]
+        code = _norm_code6(r["证券代码"])
         if not code or code == "000000":
             continue
         raw = pd.to_numeric(r[col], errors="coerce")
@@ -215,10 +252,7 @@ def find_link_holdings_file(directory: str) -> str | None:
 
 
 def _fund_code6(row) -> str:
-    code = str(row.get("证券代码", "") or "")
-    code = code.replace(".OF", "").replace(".SH", "").replace(".SZ", "")
-    code = re.sub(r"\D", "", code)
-    return code.zfill(6)[-6:] if code else ""
+    return _norm_code6(row.get("证券代码", ""))
 
 
 # ========== 文件发现 ==========
@@ -303,7 +337,7 @@ def find_data_sheet(path: str) -> str:
     for name in sheet_names:
         try:
             df = pd.read_excel(path, sheet_name=name, nrows=5)
-            cols = [str(c).replace("\n", "").strip() for c in df.columns]
+            cols = [_norm_col(c) for c in df.columns]
             score = len(cols)
             if any("基金规模合计" in c for c in cols) or any("证券代码" in c for c in cols):
                 score += 1000
@@ -530,7 +564,10 @@ def generate_excel(
     logger.info("=" * 60)
 
     external_holdings = None
+    ensure_xlsx(q1_path)
+    ensure_xlsx(q0_path)
     if link_holdings_path:
+        ensure_xlsx(link_holdings_path)
         external_holdings = load_link_holdings_ratios(link_holdings_path)
 
     q1_sheet = find_data_sheet(q1_path)
@@ -539,8 +576,8 @@ def generate_excel(
     # 读取
     df_q1 = pd.read_excel(q1_path, sheet_name=q1_sheet)
     df_q0 = pd.read_excel(q0_path, sheet_name=q0_sheet)
-    df_q1 = df_q1.rename(columns=lambda c: c.replace("\n", "").strip())
-    df_q0 = df_q0.rename(columns=lambda c: c.replace("\n", "").strip())
+    df_q1 = df_q1.rename(columns=_norm_col)
+    df_q0 = df_q0.rename(columns=_norm_col)
 
     scale_q1 = find_scale_column(df_q1.columns)
     scale_q0 = find_scale_column(df_q0.columns)
