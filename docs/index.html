@@ -163,24 +163,32 @@
   <div class="wrap">
     <h1>公募基金规模统计</h1>
     <p class="sub">
-      在浏览器里上传<strong>当期</strong>与<strong>上期</strong>季报 Excel，本地用 Pyodide 跑规则修订版统计，生成多 Sheet 台账后直接下载。
+      上传<strong>当期</strong>与<strong>上期</strong>季报 Excel（可选再传 ETF 联接穿透持仓占比），在浏览器本地生成多 Sheet 台账后下载。
       文件不上传到服务器。
     </p>
 
     <div class="card">
-      <h2>1. 选择季报</h2>
+      <h2>1. 选择文件</h2>
       <div class="row two">
         <label class="field">
-          <span class="title">当期季报（Q1）</span>
+          <span class="title">当期季报（必选）</span>
           <span class="hint">例如 2026Q3季报.xlsx</span>
           <span class="file" id="q1Name">未选择</span>
           <input id="q1" type="file" accept=".xlsx,.xls" />
         </label>
         <label class="field">
-          <span class="title">上期季报（Q0）</span>
+          <span class="title">上期季报（必选）</span>
           <span class="hint">例如 2026Q2季报.xlsx</span>
           <span class="file" id="q0Name">未选择</span>
           <input id="q0" type="file" accept=".xlsx,.xls" />
+        </label>
+      </div>
+      <div class="row" style="margin-top:4px">
+        <label class="field">
+          <span class="title">ETF联接穿透持仓占比（可选）</span>
+          <span class="hint">含「基金市值占净值比 / 持有基金市值占比」；季报已带穿透列时可不用传</span>
+          <span class="file" id="holdName">未选择（将优先用季报内穿透列，否则约 7% 默认残差）</span>
+          <input id="hold" type="file" accept=".xlsx,.xls" />
         </label>
       </div>
       <div class="actions">
@@ -194,10 +202,10 @@
     <div class="card">
       <h2>说明</h2>
       <div class="notes">
-        <div>· 分类口径为「规则修订」：灵活配置归主动权益；联接优先读季报穿透列（持有基金市值占比）。</div>
+        <div>· 联接残差优先级：季报内穿透列 → 可选上传的持仓占比表 → 类型默认约 7%。</div>
+        <div>· 分类口径为「规则修订」：灵活配置归主动权益。</div>
         <div>· 输出文件名形如 <code>YYYYMMDD公募基金规模统计_自动化_规则修订.xlsx</code>。</div>
-        <div>· 大文件（&gt;20MB）在手机上可能较慢，建议电脑 Chrome / Edge。</div>
-        <div>· WorkBuddy 技能版可离线跑同一套 <code>run_stats.py</code>。</div>
+        <div>· 大文件（&gt;20MB）建议电脑 Chrome / Edge。</div>
       </div>
     </div>
 
@@ -213,6 +221,7 @@
     let pyodide = null;
     let q1File = null;
     let q0File = null;
+    let holdFile = null;
 
     function log(msg) {
       logEl.hidden = false;
@@ -237,12 +246,20 @@
       $("q0Name").textContent = q0File ? q0File.name : "未选择";
       refreshBtn();
     });
+    $("hold").addEventListener("change", (e) => {
+      holdFile = e.target.files[0] || null;
+      $("holdName").textContent = holdFile
+        ? holdFile.name
+        : "未选择（将优先用季报内穿透列，否则约 7% 默认残差）";
+    });
     $("resetBtn").addEventListener("click", () => {
-      q1File = q0File = null;
+      q1File = q0File = holdFile = null;
       $("q1").value = "";
       $("q0").value = "";
+      $("hold").value = "";
       $("q1Name").textContent = "未选择";
       $("q0Name").textContent = "未选择";
+      $("holdName").textContent = "未选择（将优先用季报内穿透列，否则约 7% 默认残差）";
       logEl.textContent = "";
       logEl.hidden = true;
       setStatus("已清空");
@@ -294,6 +311,11 @@ print("run_stats imported", run_stats.__name__)
         setStatus("正在计算…", "warn");
         log(`Q1=${q1File.name} (${(q1File.size/1024/1024).toFixed(2)} MB)`);
         log(`Q0=${q0File.name} (${(q0File.size/1024/1024).toFixed(2)} MB)`);
+        if (holdFile) {
+          log(`HOLD=${holdFile.name} (${(holdFile.size/1024/1024).toFixed(2)} MB)`);
+        } else {
+          log("HOLD=(none)");
+        }
 
         const q1buf = new Uint8Array(await q1File.arrayBuffer());
         const q0buf = new Uint8Array(await q0File.arrayBuffer());
@@ -301,13 +323,23 @@ print("run_stats imported", run_stats.__name__)
         py.FS.mkdirTree("/tmp/out");
         py.FS.writeFile("/tmp/in/q1.xlsx", q1buf);
         py.FS.writeFile("/tmp/in/q0.xlsx", q0buf);
+        let holdPathPy = "None";
+        if (holdFile) {
+          const holdBuf = new Uint8Array(await holdFile.arrayBuffer());
+          py.FS.writeFile("/tmp/in/holdings.xlsx", holdBuf);
+          holdPathPy = '"/tmp/in/holdings.xlsx"';
+        }
 
         const outPath = await py.runPythonAsync(`
 import traceback
-from pathlib import Path
 import run_stats
 try:
-    out = run_stats.generate_excel("/tmp/in/q1.xlsx", "/tmp/in/q0.xlsx", "/tmp/out")
+    out = run_stats.generate_excel(
+        "/tmp/in/q1.xlsx",
+        "/tmp/in/q0.xlsx",
+        "/tmp/out",
+        link_holdings_path=${holdPathPy},
+    )
     print("OUT", out)
     out
 except Exception as e:
