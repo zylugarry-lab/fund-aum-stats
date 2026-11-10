@@ -189,7 +189,7 @@
       <div class="row" style="margin-top:4px">
         <label class="field">
           <span class="title">ETF联接穿透持仓占比（可选）</span>
-          <span class="hint">含「基金市值占净值比 / 持有基金市值占比」；季报已带穿透列时可不用传</span>
+          <span class="hint">可传 Wind 占比表，或重算结果（首页是「指标/值」也会读「逐只明细」）。季报已带穿透列时可不用传</span>
           <span class="file" id="holdName">未选择（将优先用季报内穿透列，否则约 7% 默认残差）</span>
           <input id="hold" type="file" accept=".xlsx,.xls" />
         </label>
@@ -282,7 +282,7 @@ await micropip.install('openpyxl')
 print('openpyxl ok')
 `);
       log("fetch run_stats.py…");
-      const code = await (await fetch("./run_stats.py")).text();
+      const code = await (await fetch("./run_stats.py", { cache: "no-store" })).text();
       pyodide.FS.writeFile("/home/pyodide/run_stats.py", code);
       await pyodide.runPythonAsync(`
 import sys
